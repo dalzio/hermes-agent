@@ -6,8 +6,15 @@ import {
   assertRemoteOnlyConnectionMode,
   REMOTE_ONLY_LOCAL_RUNTIME_ERROR,
   remoteOnlyBackend,
-  remoteOnlyBuild
+  remoteOnlyBuild,
+  remoteOnlyUpdateStatus
 } from './remote-only-mode'
+
+const APP_PATH = 'C:\\Program Files\\Hermes Remote Desktop\\resources\\app.asar'
+const BRANCH = 'feat/windows-remote-desktop'
+const SHA = 'ef967c758ce759cadddfa52ca24d314ac3126dd4'
+const FETCHED_AT = 1234
+const UPDATE_MESSAGE = 'Install a newer Hermes Remote Desktop package from GitHub Actions to update this client.'
 
 test('remote-only build flag is explicit and fail-closed', () => {
   assert.equal(remoteOnlyBuild('1'), true)
@@ -29,4 +36,25 @@ test('remote-only connection mode rejects local but permits remote transports', 
   assert.doesNotThrow(() => assertRemoteOnlyConnectionMode('remote'))
   assert.doesNotThrow(() => assertRemoteOnlyConnectionMode('cloud'))
   assert.doesNotThrow(() => assertRemoteOnlyConnectionMode('ssh'))
+})
+
+test('remote-only update status never inspects or updates a local Hermes checkout', () => {
+  assert.deepEqual(
+    remoteOnlyUpdateStatus({ appPath: APP_PATH, branch: BRANCH, currentSha: SHA, fetchedAt: FETCHED_AT }),
+    {
+      supported: false,
+      reason: 'remote-only-package',
+      message: UPDATE_MESSAGE,
+      branch: BRANCH,
+      behind: 0,
+      updateAvailable: false,
+      currentSha: SHA,
+      currentBranch: BRANCH,
+      targetSha: SHA,
+      commits: [],
+      dirty: false,
+      hermesRoot: APP_PATH,
+      fetchedAt: FETCHED_AT
+    }
+  )
 })

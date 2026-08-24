@@ -90,6 +90,12 @@ jobs:
 
           $exe = Join-Path $installDir 'Hermes Remote Desktop.exe'
           if (-not (Test-Path $exe)) { throw "Installed executable missing at $exe." }
+          $stampPath = Join-Path $installDir 'resources\install-stamp.json'
+          if (-not (Test-Path $stampPath)) { throw "Client build stamp missing at $stampPath." }
+          $stamp = Get-Content -Raw $stampPath | ConvertFrom-Json
+          if ($stamp.commit -ne $env:GITHUB_SHA) {
+            throw "Client build stamp $($stamp.commit) does not match workflow commit $env:GITHUB_SHA."
+          }
           $app = Start-Process -FilePath $exe -PassThru
           Watch-Tree $app 0 12000
           Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue

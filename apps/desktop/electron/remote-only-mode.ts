@@ -23,3 +23,33 @@ export function assertRemoteOnlyConnectionMode(mode: unknown): void {
     throw new Error(REMOTE_ONLY_LOCAL_RUNTIME_ERROR)
   }
 }
+
+interface RemoteOnlyUpdateStatusOptions {
+  appPath: string
+  branch?: null | string
+  currentSha?: null | string
+  fetchedAt?: number
+}
+
+export function remoteOnlyUpdateStatus({
+  appPath,
+  branch = null,
+  currentSha = null,
+  fetchedAt = Date.now()
+}: RemoteOnlyUpdateStatusOptions) {
+  return {
+    supported: false,
+    reason: 'remote-only-package',
+    message: 'Install a newer Hermes Remote Desktop package from GitHub Actions to update this client.',
+    branch,
+    behind: 0,
+    updateAvailable: false,
+    currentSha,
+    currentBranch: branch,
+    targetSha: currentSha,
+    commits: [],
+    dirty: false,
+    hermesRoot: appPath,
+    fetchedAt
+  }
+}

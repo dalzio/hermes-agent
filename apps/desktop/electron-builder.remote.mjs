@@ -8,7 +8,6 @@ export default {
   productName: 'Hermes Remote Desktop',
   executableName: 'Hermes Remote Desktop',
   artifactName: 'Hermes-Remote-Desktop-${version}-${arch}.${ext}',
-  extraResources: pkg.build.extraResources.filter(resource => resource.to !== 'install-stamp.json'),
   win: {
     ...pkg.build.win,
     target: ['nsis']

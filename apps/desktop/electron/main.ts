@@ -277,7 +277,8 @@ import {
   assertRemoteOnlyConnectionMode,
   REMOTE_ONLY_LOCAL_RUNTIME_ERROR,
   remoteOnlyBackend,
-  remoteOnlyBuild
+  remoteOnlyBuild,
+  remoteOnlyUpdateStatus
 } from './remote-only-mode'
 import { missingRendererAssets } from './renderer-bundle'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
@@ -2807,6 +2808,14 @@ async function resolveHealedBranch(updateRoot, branch) {
 }
 
 async function checkUpdates() {
+  if (REMOTE_ONLY) {
+    return remoteOnlyUpdateStatus({
+      appPath: app.getAppPath(),
+      branch: INSTALL_STAMP?.branch,
+      currentSha: INSTALL_STAMP?.commit
+    })
+  }
+
   const updateRoot = resolveUpdateRoot()
   let { branch } = readDesktopUpdateConfig()
   const gitDir = path.join(updateRoot, '.git')
@@ -15038,6 +15047,10 @@ ipcMain.handle('hermes:updates:branch:set', async (_event, name) => {
 // which historically drifted (stuck at 0.0.2). Falls back to app.getVersion()
 // when the source tree can't be read (e.g. a packaged build without the repo).
 function resolveHermesVersion() {
+  if (REMOTE_ONLY) {
+    return app.getVersion()
+  }
+
   try {
     const root = resolveUpdateRoot()
     const initPath = path.join(root, 'hermes_cli', '__init__.py')
@@ -15067,6 +15080,10 @@ function resolveHermesVersion() {
 // Fail-quiet: dev runs (no stamp), non-git builds, and shallow-clone gaps all
 // report in-sync rather than risk a false "your install is torn" warning.
 async function detectRendererSkew() {
+  if (REMOTE_ONLY) {
+    return { desktopCommitsBehind: 0, outOfSync: false }
+  }
+
   return detectBundleSkew(INSTALL_STAMP, runGit, resolveUpdateRoot())
 }
 
@@ -15095,7 +15112,7 @@ ipcMain.handle('hermes:version', async () => {
     electronVersion: process.versions.electron,
     nodeVersion: process.versions.node,
     platform: process.platform,
-    hermesRoot: resolveUpdateRoot(),
+    hermesRoot: REMOTE_ONLY ? app.getAppPath() : resolveUpdateRoot(),
     bundleOutOfSync: skew.outOfSync,
     bundleCommitsBehind: skew.desktopCommitsBehind
   }
