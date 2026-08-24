@@ -103,6 +103,9 @@ const emojibaseAssets = () => ({
 
 export default defineConfig(({ command }) => ({
   base: './',
+  define: {
+    __HERMES_REMOTE_ONLY__: JSON.stringify(process.env.HERMES_DESKTOP_REMOTE_ONLY === '1')
+  },
   plugins: [react(), babel({ presets: [compilerPreset()] }), tailwindcss(), emojibaseAssets()],
   css: {
     // Pin an explicit (empty) PostCSS config. Tailwind is handled entirely by

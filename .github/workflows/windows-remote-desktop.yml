@@ -1,0 +1,111 @@
+name: Windows Remote Desktop
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/windows-remote-desktop
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-remote-desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build unsigned remote-only installer
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 26
+          cache: npm
+
+      - name: Use the lockfile's npm major
+        run: npm install --global npm@12
+
+      - name: Install Node dependencies
+        uses: ./.github/actions/retry
+        with:
+          command: npm ci
+
+      - name: Run remote-only contract tests
+        working-directory: apps/desktop
+        run: npx vitest run --project electron electron/remote-only-mode.test.ts
+
+      - name: Build remote-only NSIS installer
+        working-directory: apps/desktop
+        run: npm run dist:win:remote
+
+      - name: Verify installer and packaged app never start or install Python or uv
+        shell: pwsh
+        working-directory: apps/desktop
+        run: |
+          $sandbox = Join-Path $env:RUNNER_TEMP 'hermes-remote-only-smoke'
+          $home = Join-Path $sandbox 'home'
+          $userData = Join-Path $sandbox 'user-data'
+          $installDir = Join-Path $sandbox 'app'
+          New-Item -ItemType Directory -Force -Path $home, $userData, $installDir | Out-Null
+          $env:HERMES_HOME = $home
+          $env:HERMES_DESKTOP_USER_DATA_DIR = $userData
+          $env:HERMES_DESKTOP_IGNORE_EXISTING = '1'
+
+          $script:forbidden = @()
+          function Watch-Tree([System.Diagnostics.Process]$Root, [int]$AfterExitMs, [int]$MaxRuntimeMs) {
+            $known = [System.Collections.Generic.HashSet[int]]::new()
+            [void]$known.Add($Root.Id)
+            $exitedAt = $null
+            $watch = [Diagnostics.Stopwatch]::StartNew()
+            while ($watch.ElapsedMilliseconds -lt $MaxRuntimeMs -and
+                   (-not $exitedAt -or ((Get-Date) - $exitedAt).TotalMilliseconds -lt $AfterExitMs)) {
+              $all = @(Get-CimInstance Win32_Process)
+              foreach ($proc in $all) {
+                if ($known.Contains([int]$proc.ParentProcessId)) {
+                  [void]$known.Add([int]$proc.ProcessId)
+                  if ($proc.Name -match '^(python(w)?|uv)(\.exe)?$') {
+                    $script:forbidden += $proc
+                  }
+                }
+              }
+              if ($Root.HasExited -and -not $exitedAt) { $exitedAt = Get-Date }
+              Start-Sleep -Milliseconds 100
+            }
+          }
+
+          $installer = Resolve-Path 'release/Hermes-Remote-Desktop-*.exe'
+          $install = Start-Process -FilePath $installer -ArgumentList '/S', "/D=$installDir" -PassThru
+          Watch-Tree $install 1000 120000
+          if (-not $install.HasExited) {
+            Stop-Process -Id $install.Id -Force -ErrorAction SilentlyContinue
+            throw 'Installer did not finish within 120 seconds.'
+          }
+          if ($install.ExitCode -ne 0) { throw "Installer exited with $($install.ExitCode)." }
+
+          $exe = Join-Path $installDir 'Hermes Remote Desktop.exe'
+          if (-not (Test-Path $exe)) { throw "Installed executable missing at $exe." }
+          $app = Start-Process -FilePath $exe -PassThru
+          Watch-Tree $app 0 12000
+          Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
+
+          if ($script:forbidden.Count -gt 0) {
+            $script:forbidden | Format-Table Name, ProcessId, ParentProcessId
+            throw 'Remote-only installer or Desktop started Python or uv.'
+          }
+          if (Test-Path (Join-Path $home 'hermes-agent')) {
+            throw 'Remote-only Desktop created a local Hermes runtime.'
+          }
+
+      - name: Upload unsigned installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hermes-remote-desktop-windows-unsigned-${{ github.sha }}
+          path: apps/desktop/release/Hermes-Remote-Desktop-*.exe
+          if-no-files-found: error
+          retention-days: 14

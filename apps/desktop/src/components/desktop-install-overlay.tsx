@@ -276,7 +276,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
   const [logOpen, setLogOpen] = useState(false)
   const [copied, setCopied] = useState(false)
   const [cancelling, setCancelling] = useState(false)
-  const [remoteOpen, setRemoteOpen] = useState(false)
+  const [remoteOpen, setRemoteOpen] = useState(__HERMES_REMOTE_ONLY__)
   const [now, setNow] = useState(() => Date.now())
   const logEndRef = useRef<HTMLDivElement | null>(null)
 
@@ -393,7 +393,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
   }
 
   if (remoteOpen) {
-    return <FirstRunRemoteForm onBack={() => setRemoteOpen(false)} />
+    return <FirstRunRemoteForm onBack={__HERMES_REMOTE_ONLY__ ? undefined : () => setRemoteOpen(false)} />
   }
 
   if (state.setupChoice) {
@@ -421,36 +421,38 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
               <p className="mt-2 text-sm leading-5 text-muted-foreground">{copy.connectExistingDesc}</p>
             </button>
 
-            <button
-              className="rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-4 text-left transition hover:bg-(--chrome-action-hover) disabled:cursor-wait disabled:opacity-60"
-              disabled={localStarting}
-              onClick={async () => {
-                setLocalStart({ root: activeRoot, starting: true, error: null })
+            {!__HERMES_REMOTE_ONLY__ ? (
+              <button
+                className="rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-4 text-left transition hover:bg-(--chrome-action-hover) disabled:cursor-wait disabled:opacity-60"
+                disabled={localStarting}
+                onClick={async () => {
+                  setLocalStart({ root: activeRoot, starting: true, error: null })
 
-                try {
-                  const desktop = window.hermesDesktop
+                  try {
+                    const desktop = window.hermesDesktop
 
-                  if (!desktop || typeof desktop.continueBootstrapLocal !== 'function') {
-                    throw new Error(copy.localStartUnavailable)
+                    if (!desktop || typeof desktop.continueBootstrapLocal !== 'function') {
+                      throw new Error(copy.localStartUnavailable)
+                    }
+
+                    await desktop.continueBootstrapLocal()
+                  } catch (err) {
+                    setLocalStart({ root: activeRoot, starting: false, error: errorMessage(err) })
                   }
-
-                  await desktop.continueBootstrapLocal()
-                } catch (err) {
-                  setLocalStart({ root: activeRoot, starting: false, error: errorMessage(err) })
-                }
-              }}
-              type="button"
-            >
-              <div className="flex items-center gap-2 text-sm font-medium">
-                {localStarting ? (
-                  <Loader2 className="size-4 animate-spin text-muted-foreground" />
-                ) : (
-                  <Monitor className="size-4 text-muted-foreground" />
-                )}
-                <span>{copy.installLocalTitle}</span>
-              </div>
-              <p className="mt-2 text-sm leading-5 text-muted-foreground">{copy.installLocalDesc}</p>
-            </button>
+                }}
+                type="button"
+              >
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  {localStarting ? (
+                    <Loader2 className="size-4 animate-spin text-muted-foreground" />
+                  ) : (
+                    <Monitor className="size-4 text-muted-foreground" />
+                  )}
+                  <span>{copy.installLocalTitle}</span>
+                </div>
+                <p className="mt-2 text-sm leading-5 text-muted-foreground">{copy.installLocalDesc}</p>
+              </button>
+            ) : null}
           </div>
 
           {localStartError ? (

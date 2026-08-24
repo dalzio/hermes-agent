@@ -13,7 +13,7 @@ type AuthMode = 'oauth' | 'token'
 type ProbeStatus = 'idle' | 'probing' | 'done' | 'error'
 
 interface FirstRunRemoteFormProps {
-  onBack: () => void
+  onBack?: () => void
 }
 
 function errorMessage(err: unknown): string {
@@ -218,7 +218,7 @@ export function FirstRunRemoteForm({ onBack }: FirstRunRemoteFormProps) {
     }
 
     if (applied) {
-      onBack()
+      onBack?.()
     }
   }
 
@@ -321,9 +321,13 @@ export function FirstRunRemoteForm({ onBack }: FirstRunRemoteFormProps) {
         </div>
 
         <div className="mt-7 flex flex-wrap items-center justify-between gap-3">
-          <Button disabled={applying} onClick={onBack} size="sm" variant="ghost">
-            {copy.backToSetup}
-          </Button>
+          {onBack ? (
+            <Button disabled={applying} onClick={onBack} size="sm" variant="ghost">
+              {copy.backToSetup}
+            </Button>
+          ) : (
+            <span />
+          )}
           <div className="flex items-center gap-2">
             <Button
               disabled={testing || applying || !canTest}

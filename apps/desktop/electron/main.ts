@@ -273,6 +273,12 @@ import {
   revalidatePooledRemoteBackends,
   revalidateRemoteConnection
 } from './remote-liveness'
+import {
+  assertRemoteOnlyConnectionMode,
+  REMOTE_ONLY_LOCAL_RUNTIME_ERROR,
+  remoteOnlyBackend,
+  remoteOnlyBuild
+} from './remote-only-mode'
 import { missingRendererAssets } from './renderer-bundle'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
 import {
@@ -384,6 +390,7 @@ const DEV_SERVER = process.env.HERMES_DESKTOP_DEV_SERVER
 const IS_PACKAGED = app.isPackaged || Boolean(process.env.HERMES_DESKTOP_IS_PACKAGED)
 const IS_MAC = process.platform === 'darwin'
 const IS_WINDOWS = process.platform === 'win32'
+const REMOTE_ONLY = remoteOnlyBuild()
 const IS_WSL = isWslEnvironment()
 // Truthful macOS kernel major (Tahoe = 25). Product version lies (16 vs 26) per
 // build SDK, so gate Tahoe workarounds on Darwin instead.
@@ -3525,6 +3532,10 @@ async function releaseBackendLock(updateRoot, tag) {
 // Detection (checkUpdates / commit changelog / "N behind") stays in the UI;
 // only this apply action changed.
 async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
+  if (REMOTE_ONLY) {
+    throw new Error('Hermes Remote Desktop is updated by installing a newer desktop package from GitHub Actions.')
+  }
+
   if (updateInFlight) {
     throw new Error('An update is already in progress.')
   }
@@ -4510,6 +4521,12 @@ function createActiveBackend(backendArgs) {
 }
 
 function resolveHermesBackend(backendArgs) {
+  // Remote-only packages are pure Electron clients. This guard precedes every
+  // local runtime probe so no Python, uv, Hermes CLI, or bootstrap path runs.
+  if (REMOTE_ONLY) {
+    return remoteOnlyBackend(backendArgs)
+  }
+
   // 1. Explicit override -- HERMES_DESKTOP_HERMES_ROOT points at a developer
   //    checkout. Honour it as-is (no bootstrap; the user is driving).
   const overrideRoot = process.env.HERMES_DESKTOP_HERMES_ROOT && path.resolve(process.env.HERMES_DESKTOP_HERMES_ROOT)
@@ -4687,6 +4704,10 @@ function resolveHermesBackend(backendArgs) {
 }
 
 async function ensureRuntime(backend) {
+  if (REMOTE_ONLY || backend.kind === 'remote-only') {
+    throw new Error(REMOTE_ONLY_LOCAL_RUNTIME_ERROR)
+  }
+
   if (!backend.bootstrap) {
     await advanceBootProgress('runtime.external', `Using ${backend.label}`, 32)
 
@@ -9741,6 +9762,10 @@ async function probeRemoteAuthMode(rawUrl) {
 }
 
 async function testDesktopConnectionConfig(input: any = {}) {
+  if (REMOTE_ONLY) {
+    assertRemoteOnlyConnectionMode(input.mode)
+  }
+
   if (input.mode === 'ssh') {
     const sshConfig = normalizeSshConfig({
       mode: 'ssh',
@@ -9853,7 +9878,13 @@ async function testDesktopConnectionConfig(input: any = {}) {
       token = decryptDesktopSecret(block.token)
     }
   } else {
-    const remote = (await resolveRemoteBackend(key)) || (await startHermes())
+    const resolvedRemote = await resolveRemoteBackend(key)
+
+    if (REMOTE_ONLY && !resolvedRemote) {
+      throw new Error(REMOTE_ONLY_LOCAL_RUNTIME_ERROR)
+    }
+
+    const remote = resolvedRemote || (await startHermes())
     baseUrl = remote.baseUrl
     token = remote.token
     authMode = normAuthMode(remote.authMode)
@@ -10859,6 +10890,16 @@ async function startHermes() {
       ensureLocalRuntime: ensureRuntime,
       prepareLocalBackend: async () => {
         await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
+
+        if (REMOTE_ONLY) {
+          return {
+            ...remoteOnlyBackend(backendArgs),
+            kind: 'bootstrap-needed',
+            activeRoot: '',
+            isPackaged: IS_PACKAGED,
+            installStamp: null
+          }
+        }
 
         return resolveHermesBackend(backendArgs)
       },
@@ -12777,6 +12818,10 @@ ipcMain.handle('hermes:bootstrap:repair', async () => {
   return { ok: true }
 })
 ipcMain.handle('hermes:bootstrap:continue-local', async () => {
+  if (REMOTE_ONLY) {
+    throw new Error(REMOTE_ONLY_LOCAL_RUNTIME_ERROR)
+  }
+
   rememberLog('[bootstrap] local install selected by renderer; continuing first-launch bootstrap')
   continueFirstRunLocalBootstrap()
 
@@ -12918,6 +12963,10 @@ ipcMain.handle('hermes:connection-config:test', async (_event, payload) => testD
 // list, so they are safe to ship ahead of the switchover.
 ipcMain.handle('hermes:connections:list', async () => sanitizeConnectionsRegistry())
 ipcMain.handle('hermes:connections:save', async (_event, payload) => {
+  if (REMOTE_ONLY) {
+    assertRemoteOnlyConnectionMode(payload?.kind)
+  }
+
   const saved = await saveRegistryConnection(payload)
 
   return { ok: true, connection: saved, registry: sanitizeConnectionsRegistry() }
@@ -12937,6 +12986,12 @@ ipcMain.handle('hermes:connections:remove', async (_event, id) => {
   return { ok: true, registry: sanitizeConnectionsRegistry(registry) }
 })
 ipcMain.handle('hermes:connections:set-primary', async (_event, id) => {
+  if (REMOTE_ONLY) {
+    const entry = readDesktopConnectionsRegistry().connections.find(connection => connection.id === String(id || ''))
+
+    assertRemoteOnlyConnectionMode(entry?.kind)
+  }
+
   const registry = setPrimaryConnection(readDesktopConnectionsRegistry(), String(id || ''))
   writeDesktopConnectionsRegistry(registry)
 
@@ -12996,6 +13051,10 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
   let testHeaders = {}
 
   if (entry.kind === 'local') {
+    if (REMOTE_ONLY) {
+      throw new Error(REMOTE_ONLY_LOCAL_RUNTIME_ERROR)
+    }
+
     const local = await startHermes()
     baseUrl = local.baseUrl
     token = local.token
@@ -13521,12 +13580,20 @@ ipcMain.handle('hermes:cloud:agent-sign-in', async (_event, dashboardUrl) => {
   return cloudAgentSilentSignIn(dashboardUrl)
 })
 ipcMain.handle('hermes:connection-config:save', async (_event, payload) => {
+  if (REMOTE_ONLY) {
+    assertRemoteOnlyConnectionMode(payload?.mode)
+  }
+
   const config = coerceDesktopConnectionConfig(payload)
   writeDesktopConnectionConfig(config)
 
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
 })
 ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
+  if (REMOTE_ONLY) {
+    assertRemoteOnlyConnectionMode(payload?.mode)
+  }
+
   const previousConfig = readDesktopConnectionConfig()
   const previousRegistry = readDesktopConnectionsRegistry()
   const config = coerceDesktopConnectionConfig(payload, previousConfig)
@@ -15061,7 +15128,7 @@ async function getUninstallSummary() {
   // probe fails — the renderer still needs *something* to render options from.
   const fallback = () => ({
     hermes_home: HERMES_HOME,
-    agent_installed: isHermesSourceRoot(agentRoot) && fileExists(py),
+    agent_installed: !REMOTE_ONLY && isHermesSourceRoot(agentRoot) && fileExists(py),
     gui_installed: true,
     source_built_artifacts: [],
     packaged_app_paths: [],
@@ -15070,6 +15137,10 @@ async function getUninstallSummary() {
     platform: process.platform,
     probe: 'fallback'
   })
+
+  if (REMOTE_ONLY) {
+    return fallback()
+  }
 
   if (!fileExists(py)) {
     return fallback()
@@ -15128,6 +15199,14 @@ async function getUninstallSummary() {
 }
 
 async function runDesktopUninstall(mode) {
+  if (REMOTE_ONLY) {
+    return {
+      ok: false,
+      error: 'remote-only',
+      message: 'Uninstall Hermes Remote Desktop from Windows Settings. No local Hermes runtime is used.'
+    }
+  }
+
   let uninstallArgs
 
   try {
