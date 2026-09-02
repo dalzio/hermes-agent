@@ -8,10 +8,10 @@ retry loop can reconnect promptly. Once any stream event arrives, the TTFB
 watchdog is satisfied and a separate idle watchdog handles streams that stop
 emitting SSE events.
 
-The "bytes flowing" signal is ``agent._codex_stream_last_event_ts``, set on
-*any* event by ``codex_runtime.run_codex_stream`` — so reasoning-only or
+The "bytes flowing" signal is a request-local callback invoked by
+``codex_runtime.run_codex_stream`` for *any* event, so reasoning-only or
 tool-call-only turns (which emit no output-text deltas) are not mistaken for a
-stall.
+stall and parallel calls cannot overwrite each other's timestamp.
 """
 
 from __future__ import annotations
@@ -86,7 +86,7 @@ def test_ttfb_includes_silent_hang_hint_for_gpt_5_5(tmp_path, monkeypatch):
 
     stop = {"flag": False}
 
-    def fake_hang(api_kwargs, client=None, on_first_delta=None):
+    def fake_hang(api_kwargs, client=None, on_first_delta=None, on_event=None):
         deadline = time.time() + 30
         while time.time() < deadline and not stop["flag"] and not agent._interrupt_requested:
             time.sleep(0.02)
@@ -132,10 +132,10 @@ def test_ttfb_does_not_kill_when_events_flow(tmp_path, monkeypatch):
 
     sentinel = SimpleNamespace(ok=True)
 
-    def fake_stream(api_kwargs, client=None, on_first_delta=None):
+    def fake_stream(api_kwargs, client=None, on_first_delta=None, on_event=None):
         # Bytes flowing: mark stream activity right away, then keep generating
         # past the 0.4s TTFB cutoff before returning a real response.
-        agent._codex_stream_last_event_ts = time.time()
+        on_event(SimpleNamespace(type="response.created"))
         if on_first_delta:
             on_first_delta()
         time.sleep(0.9)
@@ -146,6 +146,54 @@ def test_ttfb_does_not_kill_when_events_flow(tmp_path, monkeypatch):
     resp = h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": "hi"})
     assert resp is sentinel
     assert "codex_ttfb_kill" not in closes
+
+
+def test_recurring_non_content_events_outlive_wall_clock_stale_timeout(
+    tmp_path, monkeypatch
+):
+    """A healthy event stream may run longer than every watchdog duration."""
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "0.35")
+    monkeypatch.setenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", "0.35")
+    monkeypatch.setenv("HERMES_CODEX_HARD_TIMEOUT_SECONDS", "0.35")
+
+    closes: list[str] = []
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(
+        agent,
+        "_abort_request_openai_client",
+        lambda _client, reason=None: closes.append(reason),
+    )
+    monkeypatch.setattr(
+        agent,
+        "_close_request_openai_client",
+        lambda _client, reason=None: closes.append(reason),
+    )
+
+    response = SimpleNamespace(ok=True)
+    event_types = (
+        "response.created",
+        "response.reasoning_summary_text.delta",
+        "response.function_call_arguments.delta",
+        "response.in_progress",
+    )
+
+    def fake_stream(api_kwargs, client=None, on_first_delta=None, on_event=None):
+        for index in range(10):
+            on_event(SimpleNamespace(type=event_types[index % len(event_types)]))
+            time.sleep(0.1)
+        return response
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_stream)
+
+    result = h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": "hi"})
+
+    assert result is response
+    assert "codex_stream_idle_kill" not in closes
+    assert "stale_call_kill" not in closes
 
 
 
@@ -169,10 +217,9 @@ def test_wait_notice_omits_reconnect_when_all_deadlines_are_non_finite(
         ttfb_enabled=False,
         ttfb_timeout=float("nan"),
         last_event_ts=None,
-        call_start=100.0,
         idle_enabled=False,
         idle_timeout=float("nan"),
-        elapsed=30.0,
+        silent_for=30.0,
     )
 
     assert recovery == ""
@@ -323,7 +370,7 @@ def test_large_codex_request_hard_ceiling_reclaims_silent_stall(tmp_path, monkey
 
     stop = {"flag": False}
 
-    def fake_hang(api_kwargs, client=None, on_first_delta=None):
+    def fake_hang(api_kwargs, client=None, on_first_delta=None, on_event=None):
         # No event marker AND no event ever: the exact issue-64507 stall.
         deadline = time.time() + 120
         while time.time() < deadline and not stop["flag"] and not agent._interrupt_requested:

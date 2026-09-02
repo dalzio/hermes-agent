@@ -679,6 +679,7 @@ class TestCodexStreamCallbacks:
         from run_agent import AIAgent
 
         deltas = []
+        seen_events = []
 
         agent = AIAgent(
             api_key="test-key",
@@ -713,8 +714,17 @@ class TestCodexStreamCallbacks:
         mock_client = MagicMock()
         mock_client.responses.create.return_value = _FakeCreateStream()
 
-        agent._run_codex_stream({}, client=mock_client)
+        agent._run_codex_stream(
+            {},
+            client=mock_client,
+            on_event=lambda event: seen_events.append(event.type),
+        )
         assert "Hello from Codex!" in deltas
+        assert seen_events == [
+            "response.created",
+            "response.output_text.delta",
+            "response.completed",
+        ]
 
 
     def test_codex_remote_protocol_error_retries_then_raises(self):
